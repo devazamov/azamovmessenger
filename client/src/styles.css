@@ -342,3 +342,122 @@ body {
   .messages { padding: 12px 4%; }
   .bubble { max-width: 80%; }
 }
+
+/* ============ YANGI FUNKSIYALAR ============ */
+
+/* Unread badge */
+.chat-item-last { display: flex; align-items: center; gap: 8px; }
+.chat-item-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unread-badge {
+  background: var(--tg-blue); color: #fff;
+  min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: 10px; font-size: 12px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.chat-item.active .unread-badge { background: #fff; color: var(--tg-blue); }
+
+.premium-star { color: #f0a500; }
+
+/* Reply quote (xabar ichida) */
+.reply-quote {
+  border-left: 3px solid var(--tg-blue);
+  padding: 3px 8px; margin-bottom: 4px;
+  background: #00000008; border-radius: 4px;
+}
+.reply-quote-name { font-size: 13px; font-weight: 600; color: var(--tg-blue); }
+.reply-quote-text { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+
+.forward-tag { font-size: 12px; color: var(--tg-blue); font-style: italic; margin-bottom: 3px; }
+.edited { font-style: italic; opacity: .7; }
+
+/* Reaksiyalar */
+.reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.reaction {
+  background: #00000010; border-radius: 12px;
+  padding: 1px 7px; font-size: 13px; cursor: pointer;
+  user-select: none; transition: background .1s;
+}
+.reaction:hover { background: #00000020; }
+.reaction.mine { background: var(--tg-blue); color: #fff; }
+
+/* Kontekst menyu */
+.msg-menu {
+  position: fixed; z-index: 200;
+  background: var(--bg); border-radius: 12px;
+  box-shadow: 0 6px 30px rgba(0,0,0,.22);
+  padding: 6px; min-width: 180px;
+  animation: menu-in .12s ease;
+}
+@keyframes menu-in { from { opacity: 0; transform: scale(.95); } to { opacity: 1; transform: scale(1); } }
+.menu-emojis { display: flex; gap: 2px; padding: 4px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.menu-emoji {
+  border: none; background: none; cursor: pointer;
+  font-size: 20px; padding: 4px; border-radius: 8px; flex: 1;
+}
+.menu-emoji:hover { background: var(--hover); transform: scale(1.2); }
+.menu-item {
+  display: block; width: 100%; text-align: left;
+  border: none; background: none; cursor: pointer;
+  padding: 9px 12px; border-radius: 8px; font-size: 14px;
+}
+.menu-item:hover { background: var(--hover); }
+.menu-item.danger { color: #e53935; }
+
+/* Reply / edit bar (composer ustida) */
+.reply-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.reply-bar-icon { font-size: 18px; }
+.reply-bar-body { flex: 1; min-width: 0; border-left: 3px solid var(--tg-blue); padding-left: 8px; }
+.reply-bar-title { font-size: 13px; font-weight: 600; color: var(--tg-blue); }
+.reply-bar-text { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Emoji panel */
+.emoji-panel {
+  display: grid; grid-template-columns: repeat(8, 1fr);
+  gap: 2px; padding: 10px 16px; max-height: 180px; overflow-y: auto;
+  background: var(--bg); border-top: 1px solid var(--border);
+}
+.emoji-cell {
+  border: none; background: none; cursor: pointer;
+  font-size: 22px; padding: 4px; border-radius: 8px;
+}
+.emoji-cell:hover { background: var(--hover); transform: scale(1.2); }
+
+/* Profil modali */
+.profile-top { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; }
+.profile-avatar { position: relative; cursor: pointer; }
+.profile-cam {
+  position: absolute; bottom: 0; right: 0;
+  background: var(--tg-blue); border-radius: 50%;
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  font-size: 15px; border: 2px solid var(--bg);
+}
+.profile-name-row { font-size: 19px; font-weight: 600; margin-top: 6px; }
+.profile-username { font-size: 14px; color: var(--text-secondary); }
+.field-label { font-size: 13px; color: var(--tg-blue); font-weight: 500; margin-top: 4px; }
+
+/* Premium karta */
+.premium-card {
+  margin-top: 8px; padding: 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fff5e0, #ffe9c7);
+  border: 1px solid #f0c97a;
+}
+.premium-card.active { background: linear-gradient(135deg, #fff0d0, #ffd98a); }
+.premium-head { font-weight: 700; font-size: 16px; color: #a36a00; }
+.premium-desc { font-size: 13px; color: #8a6a30; margin: 4px 0 10px; }
+.premium-btn {
+  width: 100%; padding: 10px;
+  background: linear-gradient(135deg, #f0a500, #e08800); color: #fff;
+  border: none; border-radius: 9px; font-weight: 600; cursor: pointer; font-size: 14px;
+}
+.premium-btn:hover { filter: brightness(1.05); }
+.logout-btn {
+  width: 100%; padding: 11px; margin-top: 4px;
+  background: none; color: #e53935;
+  border: 1px solid #e5393533; border-radius: 9px; cursor: pointer; font-size: 14px;
+}
+.logout-btn:hover { background: #e5393511; }

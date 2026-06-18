@@ -5,32 +5,65 @@ service cloud.firestore {
     function signedIn() {
       return request.auth != null;
     }
+    function uid() {
+      return request.auth.uid;
+    }
+    function chatOf(chatId) {
+      return get(/databases/$(database)/documents/chats/$(chatId)).data;
+    }
     function isMember(chat) {
-      return signedIn() && request.auth.uid in chat.data.members;
+      return signedIn() && uid() in chat.members;
+    }
+    function isAdmin(chat) {
+      return signedIn() && (uid() in chat.get('admins', []) || uid() == chat.get('createdBy', ''));
     }
 
     // Foydalanuvchi profillari: hamma o'qiy oladi (qidiruv uchun),
     // faqat egasi o'zinikini yozadi.
     match /users/{userId} {
       allow read: if signedIn();
-      allow create, update: if signedIn() && request.auth.uid == userId;
+      allow create, update: if signedIn() && uid() == userId;
       allow delete: if false;
+    }
+
+    // Stories (24 soatlik) — hamma a'zo ko'radi, faqat egasi yaratadi/o'chiradi,
+    // boshqalar faqat ko'rganlar ro'yxatiga qo'shilishi mumkin.
+    match /stories/{storyId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.authorId == uid();
+      allow update: if signedIn();   // viewers ro'yxatiga qo'shilish
+      allow delete: if signedIn() && resource.data.authorId == uid();
+    }
+
+    // Qo'ng'iroqlar — signaling (offer/answer/ICE).
+    match /calls/{callId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.callerId == uid();
+      allow update, delete: if signedIn();
+      match /{sub}/{candId} {
+        allow read, write: if signedIn();
+      }
     }
 
     // Chatlar: faqat a'zolar o'qiydi/yangilaydi.
     match /chats/{chatId} {
-      allow read: if isMember(resource);
-      allow create: if signedIn() && request.auth.uid in request.resource.data.members;
-      allow update: if isMember(resource);
+      allow read: if isMember(resource.data);
+      allow create: if signedIn() && uid() in request.resource.data.members;
+      // A'zolar chatni yangilay oladi (lastMessage, typing, unread, mute, pin,
+      // a'zo qo'shish va h.k.). O'chirish taqiqlangan.
+      allow update: if isMember(resource.data) || isMember(request.resource.data);
       allow delete: if false;
 
       // Xabarlar: faqat chat a'zolari.
       match /messages/{messageId} {
-        allow read: if isMember(get(/databases/$(database)/documents/chats/$(chatId)));
-        allow create: if signedIn()
-          && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.members
-          && request.resource.data.senderId == request.auth.uid;
-        allow update, delete: if false;
+        allow read: if isMember(chatOf(chatId));
+        allow create: if isMember(chatOf(chatId))
+          && request.resource.data.senderId == uid();
+        // Tahrirlash / reaksiya / ovoz berish / "men uchun o'chirish" — a'zolar.
+        allow update: if isMember(chatOf(chatId));
+        // Hammaga o'chirish: faqat muallif yoki admin.
+        allow delete: if isMember(chatOf(chatId))
+          && (resource.data.senderId == uid() || isAdmin(chatOf(chatId)));
       }
     }
   }

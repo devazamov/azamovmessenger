@@ -3,19 +3,38 @@ import {
   onAuth, logout, startPresence,
   subscribeChats, subscribeMessages, subscribeTyping,
   sendMessage as sendMsg, setTyping, uploadFile,
-  openPrivateChat, createGroup as createGroupFb,
-  searchUsers, isUserOnline, subscribeUser,
+  openPrivateChat, createGroup as createGroupFb, createChannel as createChannelFb, openSavedChat,
+  searchUsers, isUserOnline, subscribeUser, fetchUsers,
+  editMessage, deleteMessage, deleteMessageForMe, toggleReaction, forwardMessages,
+  markChatRead, updateProfile, setPremium, setEmojiStatus,
+  muteChat, archiveChat, pinChatMessage, unpinChatMessage, updateChatMeta,
+  addMembers, removeMember, leaveChat, setAdmin,
+  sendVoice, sendSticker, sendPoll, votePoll,
+  addStory, subscribeStories, viewStory, deleteStory,
+  blockUser, unblockUser,
 } from './chatStore.js';
-import { db } from './firebase.js';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { Call, subscribeIncomingCalls, declineCall } from './calls.js';
+import { loadSettings, saveSettings, applySettings } from './theme.js';
+import {
+  requestNotifyPermission, showNotification, playPop, startRingtone,
+  setUnreadTitle, notificationsEnabled, setNotificationsEnabled,
+} from './notify.js';
 import Auth from './Auth.jsx';
 import ChatView from './ChatView.jsx';
-import { Avatar, formatTime, NewChatModal } from './components.jsx';
+import Sidebar from './Sidebar.jsx';
+import Settings from './Settings.jsx';
+import UserProfile from './UserProfile.jsx';
+import GroupInfo from './GroupInfo.jsx';
+import { StoryViewer } from './Stories.jsx';
+import { IncomingCall, CallWindow } from './CallUI.jsx';
+import { lastSeen, NewChatModal, ForwardModal, ConfirmModal } from './components.jsx';
 import Logo from './Logo.jsx';
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => { applySettings(loadSettings()); }, []);
 
   useEffect(() => {
     const unsub = onAuth((u) => { setUser(u); setLoading(false); });
@@ -27,164 +46,291 @@ export default function App() {
   return <Messenger user={user} onLogout={logout} />;
 }
 
-function Messenger({ user, onLogout }) {
+function Messenger({ user: initialUser, onLogout }) {
+  const [user, setUser] = useState(initialUser);
   const [chats, setChats] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [typing, setTypingState] = useState({});
-  const [onlineMap, setOnlineMap] = useState({}); // uid -> bool
-  const [showNew, setShowNew] = useState(false);
+  const [peerData, setPeerData] = useState({});
   const [search, setSearch] = useState('');
+  const [folder, setFolder] = useState('all');
   const [uploading, setUploading] = useState(false);
+
+  // Modallar
+  const [showNew, setShowNew] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showUserProfile, setShowUserProfile] = useState(false);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [forwarding, setForwarding] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [storyAuthor, setStoryAuthor] = useState(null);
+  const [blockedUsers, setBlockedUsers] = useState([]);
+
+  // Stories, mavzu, bildirishnoma
+  const [storiesByAuthor, setStoriesByAuthor] = useState({});
+  const [settings, setSettings] = useState(loadSettings());
+  const [notifyOn, setNotifyOn] = useState(notificationsEnabled());
+
+  // Qo'ng'iroqlar
+  const [incoming, setIncoming] = useState(null);
+  const [activeCall, setActiveCall] = useState(null);
 
   const active = chats.find((c) => c.id === activeId) || null;
 
-  // Presence — o'zimizni "online" ushlab turamiz
   useEffect(() => startPresence(user.id), [user.id]);
-
-  // Chatlar ro'yxati (realtime)
   useEffect(() => subscribeChats(user.id, setChats), [user.id]);
+  useEffect(() => subscribeUser(user.id, (d) => setUser((u) => ({ ...u, ...d, id: u.id }))), [user.id]);
+  useEffect(() => subscribeStories(setStoriesByAuthor), []);
+  useEffect(() => { requestNotifyPermission(); }, []);
 
-  // Faol chat xabarlari (realtime)
+  // Faol chat xabarlari
   useEffect(() => {
     if (!activeId) { setMessages([]); return; }
     setMessages([]);
-    const unsub = subscribeMessages(activeId, setMessages);
+    markChatRead(activeId, user.id);
+    const unsub = subscribeMessages(activeId, user.id, (msgs) => {
+      setMessages(msgs);
+      markChatRead(activeId, user.id);
+    });
     return unsub;
-  }, [activeId]);
+  }, [activeId, user.id]);
 
-  // Faol chatda typing holatini kuzatish
   useEffect(() => {
     if (!activeId) return;
     return subscribeTyping(activeId, user.id, (t) => setTypingState(t));
   }, [activeId, user.id]);
 
-  // Suhbatdoshlarning online holatini kuzatish
+  // Suhbatdoshlar holati
   const peerIds = chats.filter((c) => c.peer).map((c) => c.peer.id).join(',');
   useEffect(() => {
     const ids = peerIds ? peerIds.split(',') : [];
     const unsubs = ids.map((uid) =>
       subscribeUser(uid, (data) => {
-        setOnlineMap((prev) => ({ ...prev, [uid]: isUserOnline(data) }));
+        setPeerData((prev) => ({
+          ...prev,
+          [uid]: {
+            online: isUserOnline(data),
+            lastActive: data.lastActive?.toMillis ? data.lastActive.toMillis() : Date.now(),
+            premium: !!data.premium,
+            photoURL: data.photoURL || null,
+            displayName: data.displayName,
+            username: data.username,
+            bio: data.bio || '',
+            avatarColor: data.avatarColor,
+            emojiStatus: data.emojiStatus || null,
+          },
+        }));
       })
     );
     return () => unsubs.forEach((u) => u && u());
   }, [peerIds]);
 
-  async function handleSend({ body }) {
-    if (!activeId) return;
-    await sendMsg(activeId, user, { body });
-  }
+  // Kelayotgan qo'ng'iroqlar
+  useEffect(() => subscribeIncomingCalls(user.id, (c) => setIncoming(c)), [user.id]);
+  useEffect(() => {
+    if (incoming && !activeCall) { const stop = startRingtone(); return stop; }
+  }, [incoming, activeCall]);
+
+  // Bildirishnomalar + sarlavhadagi o'qilmagan soni
+  const notifyBaseline = useRef(null);
+  useEffect(() => {
+    const total = chats.filter((c) => !c.muted).reduce((a, c) => a + (c.unread || 0), 0);
+    setUnreadTitle(total);
+
+    if (notifyBaseline.current === null) {
+      // Birinchi yuklashda eski xabarlarga bildirishnoma chiqarmaymiz
+      notifyBaseline.current = {};
+      for (const c of chats) notifyBaseline.current[c.id] = c.lastMessage?.createdAt || 0;
+      return;
+    }
+    for (const c of chats) {
+      const t = c.lastMessage?.createdAt || 0;
+      const prev = notifyBaseline.current[c.id] || 0;
+      if (t > prev && c.lastMessage && c.lastMessage.senderId !== user.id && !c.muted) {
+        const hidden = document.visibilityState !== 'visible';
+        if (c.id !== activeId || hidden) {
+          playPop();
+          showNotification(c.title, {
+            body: c.lastMessage.preview || c.lastMessage.body || 'Yangi xabar',
+            icon: c.photoURL || undefined,
+            onClick: () => setActiveId(c.id),
+          });
+        }
+      }
+      notifyBaseline.current[c.id] = t;
+    }
+  }, [chats, activeId, user.id]);
+
+  // ---- Xabar yuborish ----
+  const handleSend = (payload) => activeId && sendMsg(activeId, user, payload);
 
   async function handleFile(file) {
     if (!activeId || !file) return;
     setUploading(true);
     try {
       const attachment = await uploadFile(file, user.id);
-      await sendMsg(activeId, user, { body: '', attachment });
+      await sendMsg(activeId, user, { attachment });
     } catch (err) {
-      alert('Yuklashda xato: ' + (err.message || err));
-    } finally {
-      setUploading(false);
-    }
+      alert('Fayl yuklash ishlamadi (Storage sozlanmagan?).\n' + (err.message || err));
+    } finally { setUploading(false); }
   }
+
+  async function handleVoice({ blob, duration, waveform }) {
+    if (!activeId) return;
+    try { await sendVoice(activeId, user, blob, duration, waveform); }
+    catch (err) { alert('Ovozli xabar yuborilmadi.\n' + (err.message || err)); }
+  }
+
+  const handleSticker = (s) => activeId && sendSticker(activeId, user, s);
+  const handlePoll = (p) => activeId && sendPoll(activeId, user, p);
+  const handleVote = (msgId, optId, multiple) => votePoll(activeId, msgId, optId, user.id, multiple);
 
   const lastTyping = useRef(0);
   function notifyTyping() {
     const now = Date.now();
-    if (now - lastTyping.current > 2500) {
-      lastTyping.current = now;
-      if (activeId) setTyping(activeId, user);
-    }
+    if (now - lastTyping.current > 2500) { lastTyping.current = now; if (activeId) setTyping(activeId, user); }
   }
 
-  async function openPrivate(u) {
-    const chatId = await openPrivateChat(user, u);
-    setActiveId(chatId);
-    setShowNew(false);
+  // ---- Profil rasm ----
+  async function handleProfilePhoto(file) {
+    setUploading(true);
+    try {
+      const att = await uploadFile(file, user.id);
+      await updateProfile(user.id, { photoURL: att.url });
+    } catch (err) { alert('Rasm yuklanmadi.\n' + (err.message || err)); }
+    finally { setUploading(false); }
+  }
+  async function handleGroupPhoto(file) {
+    if (!active) return;
+    try { const att = await uploadFile(file, user.id); await updateChatMeta(active.id, { photoURL: att.url }); }
+    catch (err) { alert('Rasm yuklanmadi.\n' + (err.message || err)); }
   }
 
-  async function createGroup(title, members) {
-    const chatId = await createGroupFb(user, title, members);
-    setActiveId(chatId);
-    setShowNew(false);
+  // ---- Suhbat ochish/yaratish ----
+  async function openPrivate(u) { setActiveId(await openPrivateChat(user, u)); setShowNew(false); }
+  async function createGroup(title, members) { setActiveId(await createGroupFb(user, title, members)); setShowNew(false); }
+  async function createChannel(title, desc, members) { setActiveId(await createChannelFb(user, title, desc, members)); setShowNew(false); }
+  async function openSaved() { setActiveId(await openSavedChat(user)); }
+
+  // ---- Forward ----
+  async function doForward(targetChat) {
+    if (forwarding) await forwardMessages(targetChat.id, user, forwarding);
+    setForwarding(null);
+    setActiveId(targetChat.id);
   }
 
-  const isOnline = (chat) => chat.peer ? !!onlineMap[chat.peer.id] : false;
-  const filteredChats = chats.filter((c) =>
-    c.title.toLowerCase().includes(search.toLowerCase()));
+  // ---- Chat sozlamalari ----
+  const handleMute = (c, v) => muteChat(c.id, user.id, v);
+  const handleArchive = (c, v) => archiveChat(c.id, user.id, v);
+  function handleLeave(c) {
+    setConfirm({
+      title: c.type === 'channel' ? 'Kanalni tark etish' : 'Chiqish',
+      text: `"${c.title}" dan chiqasizmi?`,
+      confirmLabel: 'Chiqish', danger: true,
+      onConfirm: async () => { await leaveChat(c.id, user.id); if (activeId === c.id) setActiveId(null); setShowGroupInfo(false); setConfirm(null); },
+    });
+  }
+
+  // ---- Stories ----
+  async function handleAddStory(file) {
+    try { await addStory(user, file, ''); } catch (err) { alert('Story yuklanmadi.\n' + (err.message || err)); }
+  }
+
+  // ---- Block ----
+  const isBlocked = active?.peer ? (user.blocked || []).includes(active.peer.id) : false;
+  function toggleBlock() {
+    if (!active?.peer) return;
+    if (isBlocked) unblockUser(user.id, active.peer.id);
+    else blockUser(user.id, active.peer.id);
+  }
+
+  // ---- Sozlamalar oynasi ----
+  async function openSettings() {
+    setShowSettings(true);
+    const ids = user.blocked || [];
+    setBlockedUsers(ids.length ? await fetchUsers(ids) : []);
+  }
+  function changeTheme(next) { setSettings(next); saveSettings(next); applySettings(next); }
+  function toggleNotify(v) { setNotifyOn(v); setNotificationsEnabled(v); if (v) requestNotifyPermission(); }
+
+  // ---- Qo'ng'iroqlar ----
+  function startCall(video) {
+    if (!active?.peer || activeCall) return;
+    const pd = peerData[active.peer.id] || {};
+    const peer = { id: active.peer.id, displayName: active.title, avatarColor: active.avatarColor, photoURL: active.photoURL || pd.photoURL };
+    const session = new Call({ me: user, peer, isCaller: true, video });
+    session.on('state', (s) => { if (s === 'ended') setActiveCall(null); });
+    setActiveCall({ session, peer, video, isCaller: true });
+  }
+  function acceptCall() {
+    if (!incoming) return;
+    const peer = { id: incoming.callerId, displayName: incoming.callerName, avatarColor: incoming.callerColor, photoURL: incoming.callerPhoto };
+    const session = new Call({ me: user, peer, callId: incoming.id, isCaller: false, video: incoming.type === 'video' });
+    session.on('state', (s) => { if (s === 'ended') setActiveCall(null); });
+    setActiveCall({ session, peer, video: incoming.type === 'video', isCaller: false });
+    setIncoming(null);
+  }
+  function rejectCall() { if (incoming) declineCall(incoming.id); setIncoming(null); }
+
+  // ---- Header / subtitle ----
+  const activePeer = active?.peer ? peerData[active.peer.id] : null;
+  const activeSub = active
+    ? (active.type === 'saved' ? 'O\'zingizga eslatma'
+      : active.type === 'channel' ? `${active.members.length} obunachi`
+      : active.type === 'group' ? `${active.members.length} a'zo`
+      : activePeer?.online ? 'onlayn' : `oxirgi marta ${lastSeen(activePeer?.lastActive)}`)
+    : '';
+
+  const canPost = active?.type !== 'channel' || active?.admins?.includes(user.id) || active?.createdBy === user.id;
+
+  function onHeaderClick() {
+    if (!active) return;
+    if (active.type === 'private') setShowUserProfile(true);
+    else if (active.type === 'group' || active.type === 'channel') setShowGroupInfo(true);
+  }
+
+  // Profil ko'rish uchun peer ma'lumoti
+  const peerProfile = active?.peer ? {
+    id: active.peer.id,
+    displayName: activePeer?.displayName || active.title,
+    username: activePeer?.username || '',
+    avatarColor: active.avatarColor,
+    photoURL: active.photoURL || activePeer?.photoURL,
+    bio: activePeer?.bio || '',
+    premium: activePeer?.premium,
+    emojiStatus: activePeer?.emojiStatus,
+  } : null;
 
   return (
-    <div className="messenger">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <Logo size={28} />
-          <span className="brand-name">AZAMOV</span>
-        </div>
-
-        <div className="sidebar-header">
-          <Avatar name={user.displayName} color={user.avatarColor} size={40} />
-          <div className="sidebar-me">
-            <div className="sidebar-name">{user.displayName}</div>
-            <div className="sidebar-status online">● onlayn</div>
-          </div>
-          <button className="icon-btn" title="Chiqish" onClick={onLogout}>⎋</button>
-        </div>
-
-        <div className="search-bar">
-          <input
-            placeholder="Qidirish..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-
-        <div className="chat-list">
-          {filteredChats.length === 0 && (
-            <div className="empty-hint">Suhbatlar yo'q. Yangi suhbat boshlang.</div>
-          )}
-          {filteredChats.map((c) => (
-            <div
-              key={c.id}
-              className={c.id === activeId ? 'chat-item active' : 'chat-item'}
-              onClick={() => setActiveId(c.id)}
-            >
-              <Avatar name={c.title} color={c.avatarColor} size={52} online={isOnline(c)} />
-              <div className="chat-item-body">
-                <div className="chat-item-top">
-                  <span className="chat-item-title">{c.title}</span>
-                  {c.lastMessage && <span className="chat-item-time">{formatTime(c.lastMessage.createdAt)}</span>}
-                </div>
-                <div className="chat-item-last">
-                  {c.lastMessage ? (
-                    <>
-                      {c.type === 'group' && c.lastMessage.senderName ? `${c.lastMessage.senderName.split(' ')[0]}: ` : ''}
-                      {c.lastMessage.attachment ? (c.lastMessage.attachment.isImage ? '🖼 Rasm' : '📄 Fayl') : c.lastMessage.body}
-                    </>
-                  ) : (
-                    <span className="muted">Xabar yo'q</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <button className="fab" onClick={() => setShowNew(true)} title="Yangi suhbat">✎</button>
-      </aside>
+    <div className={activeId ? 'messenger has-active' : 'messenger'}>
+      <Sidebar
+        user={user} chats={chats} activeId={activeId} onSelect={setActiveId}
+        search={search} setSearch={setSearch} folder={folder} setFolder={setFolder}
+        storiesByAuthor={storiesByAuthor} onAddStory={handleAddStory} onOpenStory={setStoryAuthor}
+        onOpenSettings={openSettings} onNewChat={() => setShowNew(true)} onOpenSaved={openSaved}
+        peerData={peerData} onMute={handleMute} onArchive={handleArchive} onLeave={handleLeave}
+      />
 
       <main className="main-pane">
         {active ? (
           <ChatView
-            chat={active}
-            me={user}
-            messages={messages}
-            onSend={handleSend}
-            onFile={handleFile}
+            chat={active} me={user} messages={messages} subtitle={activeSub}
+            online={activePeer?.online || false} uploading={uploading} typingUsers={typing}
+            canPost={canPost}
+            onSend={handleSend} onFile={handleFile} onVoice={handleVoice}
+            onSticker={handleSticker} onPoll={handlePoll} onVote={handleVote}
             onTyping={notifyTyping}
-            typingUsers={typing}
-            online={isOnline(active)}
-            uploading={uploading}
+            onEdit={(id, body) => editMessage(active.id, id, body)}
+            onDeleteEveryone={(id) => deleteMessage(active.id, id)}
+            onDeleteForMe={(id) => deleteMessageForMe(active.id, id, user.id)}
+            onReact={(id, em) => toggleReaction(active.id, id, em, user.id)}
+            onForward={(msgs) => setForwarding(msgs)}
+            onPin={(msg) => pinChatMessage(active.id, msg)}
+            onUnpin={() => unpinChatMessage(active.id)}
+            onHeaderClick={onHeaderClick}
+            onAudioCall={() => startCall(false)} onVideoCall={() => startCall(true)}
+            onBack={() => setActiveId(null)}
           />
         ) : (
           <div className="welcome">
@@ -198,10 +344,70 @@ function Messenger({ user, onLogout }) {
       {showNew && (
         <NewChatModal
           onClose={() => setShowNew(false)}
-          onOpenPrivate={openPrivate}
-          onCreateGroup={createGroup}
+          onOpenPrivate={openPrivate} onCreateGroup={createGroup} onCreateChannel={createChannel}
           searchUsers={(q) => searchUsers(q, user.id)}
         />
+      )}
+
+      {forwarding && (
+        <ForwardModal chats={chats} count={forwarding.length}
+          onClose={() => setForwarding(null)} onPick={doForward} />
+      )}
+
+      {showSettings && (
+        <Settings
+          user={user} settings={settings} onClose={() => setShowSettings(false)}
+          onSaveProfile={(f) => updateProfile(user.id, f)}
+          onUploadPhoto={handleProfilePhoto} onTheme={changeTheme}
+          onTogglePremium={(v) => setPremium(user.id, v)}
+          onSetEmojiStatus={(e) => setEmojiStatus(user.id, e)}
+          onLogout={onLogout}
+          notifyOn={notifyOn} onToggleNotify={toggleNotify}
+          blockedUsers={blockedUsers} onUnblock={(id) => { unblockUser(user.id, id); setBlockedUsers((p) => p.filter((u) => u.id !== id)); }}
+        />
+      )}
+
+      {showUserProfile && peerProfile && (
+        <UserProfile
+          user={peerProfile} online={activePeer?.online} lastActive={activePeer?.lastActive}
+          isBlocked={isBlocked}
+          onAudioCall={() => { setShowUserProfile(false); startCall(false); }}
+          onVideoCall={() => { setShowUserProfile(false); startCall(true); }}
+          onToggleBlock={() => { toggleBlock(); setShowUserProfile(false); }}
+          onClose={() => setShowUserProfile(false)}
+        />
+      )}
+
+      {showGroupInfo && active && (
+        <GroupInfo
+          chat={active} me={user} onClose={() => setShowGroupInfo(false)}
+          onEditMeta={(f) => updateChatMeta(active.id, f)} onUploadPhoto={handleGroupPhoto}
+          onAddMembers={(users) => addMembers(active.id, users)}
+          onRemoveMember={(uid) => removeMember(active.id, uid)}
+          onLeave={() => handleLeave(active)}
+          onSetAdmin={(uid, v) => setAdmin(active.id, uid, v)}
+          searchUsers={(q) => searchUsers(q, user.id)}
+        />
+      )}
+
+      {storyAuthor && (
+        <StoryViewer
+          authorId={storyAuthor} storiesByAuthor={storiesByAuthor} me={user}
+          onClose={() => setStoryAuthor(null)}
+          onView={(id) => viewStory(id, user.id)} onDelete={(id) => deleteStory(id)}
+        />
+      )}
+
+      {confirm && (
+        <ConfirmModal {...confirm} onClose={() => setConfirm(null)} />
+      )}
+
+      {incoming && !activeCall && (
+        <IncomingCall call={incoming} onAccept={acceptCall} onDecline={rejectCall} />
+      )}
+      {activeCall && (
+        <CallWindow session={activeCall.session} peer={activeCall.peer}
+          video={activeCall.video} isCaller={activeCall.isCaller} />
       )}
     </div>
   );
