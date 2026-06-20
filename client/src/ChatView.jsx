@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Avatar, formatTime, formatBytes, dayLabel, renderText } from './components.jsx';
+import { Avatar, formatTime, formatBytes, dayLabel, renderText, ContactPickerModal } from './components.jsx';
 import { VoiceRecorder, VoicePlayer } from './Voice.jsx';
+import { VideoNoteRecorder, VideoNotePlayer } from './VideoNote.jsx';
 import { PollMessage, CreatePollModal } from './Poll.jsx';
 import Stickers from './Stickers.jsx';
 import Lightbox from './Lightbox.jsx';
@@ -23,7 +24,8 @@ const isEmojiOnly = (s) => {
 export default function ChatView({
   chat, me, messages, subtitle, online, uploading, typingUsers, canPost,
   onSend, onFile, onVoice, onSticker, onPoll, onVote, onTyping,
-  onEdit, onDeleteEveryone, onDeleteForMe, onReact, onForward, onPin, onUnpin,
+  onVideoNote, onSendContact, onSendLocation, onOpenContact, searchUsers,
+  onEdit, onDeleteEveryone, onDeleteForMe, onReact, onForward, onPin, onUnpin, onReport,
   onHeaderClick, onAudioCall, onVideoCall, onBack,
 }) {
   const [text, setText] = useState('');
@@ -33,6 +35,8 @@ export default function ChatView({
   const [showStickers, setShowStickers] = useState(false);
   const [showAttach, setShowAttach] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingVideo, setRecordingVideo] = useState(false);
+  const [contactPicker, setContactPicker] = useState(false);
   const [creatingPoll, setCreatingPoll] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const [ttl, setTtl] = useState(0);
@@ -147,6 +151,16 @@ export default function ChatView({
 
   function pickFile(e) { const f = e.target.files?.[0]; e.target.value = ''; if (f) onFile(f); }
 
+  function shareLocation() {
+    setShowAttach(false);
+    if (!navigator.geolocation) { alert('Brauzer geolokatsiyani qo\'llab-quvvatlamaydi.'); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => onSendLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => alert('Lokatsiyaga ruxsat berilmadi.'),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
+
   function openMenu(e, msg) {
     e.preventDefault();
     if (selectMode) { toggleSelect(msg); return; }
@@ -189,6 +203,7 @@ export default function ChatView({
             size={42} online={chat.type === 'private' && online} />
           <div className="chat-header-info">
             <div className="chat-header-title">
+              {chat.secret && <span className="secret-lock" title="Maxfiy chat">🔒 </span>}
               {chat.title}
               {chat.peer?.premium && <span className="premium-star"> ⭐</span>}
               {chat.peer?.emojiStatus && <span> {chat.peer.emojiStatus}</span>}
@@ -272,6 +287,7 @@ export default function ChatView({
                 onMenu={openMenu} onReact={onReact} onSelect={toggleSelect}
                 onVote={(optId) => onVote(m.id, optId, m.poll?.multiple)}
                 onImage={(src, name) => setLightbox({ src, name })}
+                onContact={onOpenContact}
               />
             </React.Fragment>
           );
@@ -291,6 +307,7 @@ export default function ChatView({
           onPin={() => { onPin(menu.msg); setMenu(null); }}
           onCopy={() => { navigator.clipboard?.writeText(menu.msg.body || ''); setMenu(null); }}
           onSelect={() => { setSelectMode(true); toggleSelect(menu.msg); setMenu(null); }}
+          onReport={() => { onReport(menu.msg); setMenu(null); }}
         />
       )}
 
@@ -340,9 +357,12 @@ export default function ChatView({
               </button>
               {showAttach && (
                 <div className="attach-menu" onClick={(e) => e.stopPropagation()}>
-                  <button type="button" onClick={() => { photoRef.current?.click(); setShowAttach(false); }}>🖼 Rasm</button>
+                  <button type="button" onClick={() => { photoRef.current?.click(); setShowAttach(false); }}>🖼 Rasm / Video</button>
                   <button type="button" onClick={() => { fileRef.current?.click(); setShowAttach(false); }}>📄 Fayl</button>
-                  <button type="button" onClick={() => { setCreatingPoll(true); setShowAttach(false); }}>📊 So'rovnoma</button>
+                  <button type="button" onClick={() => { setRecordingVideo(true); setShowAttach(false); }}>📹 Video xabar</button>
+                  <button type="button" onClick={() => { setContactPicker(true); setShowAttach(false); }}>👤 Kontakt</button>
+                  <button type="button" onClick={shareLocation}>📍 Lokatsiya</button>
+                  {chat.type !== 'channel' && <button type="button" onClick={() => { setCreatingPoll(true); setShowAttach(false); }}>📊 So'rovnoma</button>}
                   <div className="attach-ttl">
                     <span>⏱ O'z-o'zini yo'q qilish</span>
                     <select value={ttl} onChange={(e) => setTtl(Number(e.target.value))}>
@@ -353,7 +373,7 @@ export default function ChatView({
               )}
             </div>
             <input type="file" ref={fileRef} style={{ display: 'none' }} onChange={pickFile} />
-            <input type="file" accept="image/*" ref={photoRef} style={{ display: 'none' }} onChange={pickFile} />
+            <input type="file" accept="image/*,video/*" ref={photoRef} style={{ display: 'none' }} onChange={pickFile} />
             <button type="button" className="icon-btn attach" onClick={() => setShowStickers((s) => !s)} title="Emoji / Stiker">😊</button>
             <input
               ref={inputRef}
@@ -377,6 +397,22 @@ export default function ChatView({
         <CreatePollModal onClose={() => setCreatingPoll(false)}
           onCreate={(p) => { onPoll(p); setCreatingPoll(false); }} />
       )}
+      {recordingVideo && (
+        <VideoNoteRecorder
+          onDone={(v) => { onVideoNote(v); setRecordingVideo(false); }}
+          onCancel={() => setRecordingVideo(false)}
+        />
+      )}
+      {contactPicker && (
+        <ContactPickerModal
+          searchUsers={searchUsers}
+          onClose={() => setContactPicker(false)}
+          onPick={(u) => {
+            onSendContact({ uid: u.id, name: u.displayName, username: u.username || null, avatarColor: u.avatarColor, photoURL: u.photoURL || null });
+            setContactPicker(false);
+          }}
+        />
+      )}
       {lightbox && <Lightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
     </div>
   );
@@ -384,7 +420,7 @@ export default function ChatView({
 
 function MessageBubble({
   m, mine, showName, meId, isChannel, read, selectMode, selected,
-  highlight, searchQ, refCb, onMenu, onReact, onSelect, onVote, onImage,
+  highlight, searchQ, refCb, onMenu, onReact, onSelect, onVote, onImage, onContact,
 }) {
   const reactions = Object.entries(m.reactions || {}).filter(([, u]) => u.length > 0);
   const bigEmoji = (m.sticker) || (!m.attachment && !m.voice && !m.poll && isEmojiOnly(m.body));
@@ -415,6 +451,9 @@ function MessageBubble({
           )}
           {m.attachment && <Attachment a={m.attachment} onImage={onImage} />}
           {m.voice && <VoicePlayer voice={m.voice} mine={mine} />}
+          {m.videoNote && <VideoNotePlayer videoNote={m.videoNote} />}
+          {m.contact && <ContactCard contact={m.contact} onOpen={onContact} />}
+          {m.location && <LocationCard location={m.location} />}
           {m.poll && <PollMessage poll={m.poll} meId={meId} onVote={onVote} />}
           {m.body && (
             <div className={bigEmoji ? 'bubble-text big' : 'bubble-text'}>
@@ -466,7 +505,7 @@ function highlightText(text, q) {
 
 function MessageMenu({
   menu, mine, isAdmin, isSaved, onReply, onEdit, onDeleteEveryone, onDeleteForMe,
-  onForward, onReact, onPin, onCopy, onSelect,
+  onForward, onReact, onPin, onCopy, onSelect, onReport,
 }) {
   const canDeleteEveryone = mine || isAdmin;
   return (
@@ -481,6 +520,7 @@ function MessageMenu({
       {menu.msg.body && <button className="menu-item" onClick={onCopy}>📋 Nusxalash</button>}
       <button className="menu-item" onClick={onPin}>📌 Qadab qo'yish</button>
       <button className="menu-item" onClick={onSelect}>☑️ Tanlash</button>
+      {!mine && !isSaved && <button className="menu-item" onClick={onReport}>🚩 Shikoyat</button>}
       {mine && menu.msg.body && <button className="menu-item" onClick={onEdit}>✏️ Tahrirlash</button>}
       <button className="menu-item" onClick={onDeleteForMe}>🙈 Men uchun o'chirish</button>
       {canDeleteEveryone && <button className="menu-item danger" onClick={onDeleteEveryone}>🗑 Hammaga o'chirish</button>}
@@ -496,6 +536,13 @@ function Attachment({ a, onImage }) {
       </div>
     );
   }
+  if (a.isVideo) {
+    return (
+      <div className="attach-video">
+        <video src={a.url} controls playsInline preload="metadata" />
+      </div>
+    );
+  }
   return (
     <a href={a.url} target="_blank" rel="noreferrer" download={a.name} className="attach-file">
       <span className="attach-icon">📄</span>
@@ -503,6 +550,30 @@ function Attachment({ a, onImage }) {
         <span className="attach-name">{a.name}</span>
         <span className="attach-size">{formatBytes(a.size)}</span>
       </span>
+    </a>
+  );
+}
+
+function ContactCard({ contact, onOpen }) {
+  return (
+    <div className="contact-card" onClick={() => onOpen && onOpen(contact)}>
+      <Avatar name={contact.name} color={contact.avatarColor} photoURL={contact.photoURL} size={44} />
+      <div className="contact-card-info">
+        <div className="contact-card-name">👤 {contact.name}</div>
+        {contact.username && <div className="contact-card-username">@{contact.username}</div>}
+      </div>
+    </div>
+  );
+}
+
+function LocationCard({ location }) {
+  const { lat, lng } = location;
+  const href = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=16/${lat}/${lng}`;
+  const tile = `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lng}&zoom=15&size=300x150&markers=${lat},${lng},red-pushpin`;
+  return (
+    <a className="location-card" href={href} target="_blank" rel="noreferrer">
+      <img src={tile} alt="Lokatsiya" onError={(e) => { e.target.style.display = 'none'; }} />
+      <div className="location-card-foot">📍 {lat.toFixed(5)}, {lng.toFixed(5)}</div>
     </a>
   );
 }

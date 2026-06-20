@@ -1,4 +1,4 @@
-import { auth, db, storage } from './firebase.js';
+import { auth, db } from './firebase.js';
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -10,7 +10,10 @@ import {
   orderBy, onSnapshot, getDocs, serverTimestamp, limit, arrayUnion, arrayRemove,
   deleteField, writeBatch, increment,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { uploadFile, uploadBlob } from './media.js';
+
+// Media yuklash media.js orqali (Supabase, fallback Firebase). Qayta eksport.
+export { uploadFile, uploadBlob };
 
 const COLORS = ['#e17076', '#7bc862', '#65aadd', '#a695e7', '#ee7aae', '#6ec9cb', '#faa774'];
 function pickColor(seed) {
@@ -56,6 +59,58 @@ export async function setPremium(uid, value) {
   await updateDoc(doc(db, 'users', uid), { premium: !!value });
 }
 
+// ---------- PREMIUM (pullik) ----------
+export const PREMIUM_PLANS = [
+  { id: '1m', label: '1 oy', months: 1, price: 12000, perMonth: 12000 },
+  { id: '6m', label: '6 oy', months: 6, price: 60000, perMonth: 10000 },
+  { id: '12m', label: '1 yil', months: 12, price: 96000, perMonth: 8000 },
+];
+
+const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Demo to'lov: rejani sotib olish — premiumni yoqadi, muddat qo'shadi va
+// to'lov yozuvini (payments) saqlaydi. (Haqiqiy to'lov shlyuzi emas.)
+export async function purchasePremium(me, planId, card = {}) {
+  const plan = PREMIUM_PLANS.find((p) => p.id === planId);
+  if (!plan) throw new Error('Reja topilmadi');
+  const userRef = doc(db, 'users', me.id);
+  const snap = await getDoc(userRef);
+  const current = toMillis(snap.data()?.premiumUntil);
+  const base = current && current > Date.now() ? current : Date.now();
+  const until = base + plan.months * MONTH_MS;
+
+  await updateDoc(userRef, {
+    premium: true,
+    premiumUntil: until,
+    premiumPlan: plan.id,
+  });
+  await addDoc(collection(db, 'payments'), {
+    uid: me.id,
+    userName: me.displayName,
+    username: me.username || null,
+    planId: plan.id,
+    planLabel: plan.label,
+    amount: plan.price,
+    months: plan.months,
+    status: 'paid',
+    cardLast4: (card.number || '').replace(/\s/g, '').slice(-4) || null,
+    createdAt: serverTimestamp(),
+  });
+  return until;
+}
+
+// Premium muddati tugaganini tekshirish (login paytida).
+export async function checkPremiumExpiry(uid, data) {
+  if (data?.premium && data?.premiumUntil) {
+    const until = toMillis(data.premiumUntil);
+    if (until && until < Date.now()) {
+      await updateDoc(doc(db, 'users', uid), { premium: false }).catch(() => {});
+      return { ...data, premium: false };
+    }
+  }
+  return data;
+}
+
 export async function setEmojiStatus(uid, emoji) {
   await updateDoc(doc(db, 'users', uid), { emojiStatus: emoji || null });
 }
@@ -74,7 +129,13 @@ export function onAuth(cb) {
     if (!fbUser) { cb(null); return; }
     const snap = await getDoc(doc(db, 'users', fbUser.uid));
     if (snap.exists()) {
-      const u = snap.data();
+      if (snap.data().banned) {
+        await signOut(auth);
+        alert('Hisobingiz bloklangan. Administrator bilan bog\'laning.');
+        cb(null);
+        return;
+      }
+      const u = await checkPremiumExpiry(fbUser.uid, snap.data());
       cb({ id: u.uid, ...u });
     } else {
       const username = (fbUser.email || 'user').split('@')[0].toLowerCase();
@@ -153,10 +214,14 @@ export function isUserOnline(userData) {
 // ---------- CHATS ----------
 function previewOf(msg) {
   if (!msg) return '';
+  if (msg.enc) return '🔒 Maxfiy xabar';
   if (msg.voice || msg.type === 'voice') return '🎤 Ovozli xabar';
+  if (msg.videoNote || msg.type === 'videoNote') return '📹 Video xabar';
   if (msg.poll || msg.type === 'poll') return '📊 So\'rovnoma';
   if (msg.sticker || msg.type === 'sticker') return (msg.sticker?.emoji || msg.sticker || '🖼 Stiker');
-  if (msg.attachment) return msg.attachment.isImage ? '🖼 Rasm' : '📄 Fayl';
+  if (msg.contact || msg.type === 'contact') return '👤 Kontakt';
+  if (msg.location || msg.type === 'location') return '📍 Lokatsiya';
+  if (msg.attachment) return msg.attachment.isVideo ? '🎬 Video' : msg.attachment.isImage ? '🖼 Rasm' : '📄 Fayl';
   return msg.body || '';
 }
 
@@ -166,7 +231,7 @@ function decorate(id, c, meId) {
   let peer = null;
   if (c.type === 'saved') {
     title = 'Saqlangan xabarlar';
-  } else if (c.type === 'private') {
+  } else if (c.type === 'private' || c.type === 'secret') {
     const otherId = (c.members || []).find((m) => m !== meId);
     const info = c.memberInfo?.[otherId];
     if (info) {
@@ -198,6 +263,8 @@ function decorate(id, c, meId) {
     archived: !!c.archived?.[meId],
     readAt: c.readAt || {},
     pinnedMessage: c.pinnedMessage || null,
+    secret: c.type === 'secret',
+    secretKey: c.secretKey || null,
     lastMessage: lm ? { ...lm, createdAt: toMillis(lm.createdAt) } : null,
   };
 }
@@ -224,6 +291,24 @@ export async function openPrivateChat(me, other) {
   const ref = await addDoc(collection(db, 'chats'), {
     type: 'private',
     members: [me.id, other.id],
+    memberInfo: {
+      [me.id]: { displayName: me.displayName, avatarColor: me.avatarColor, photoURL: me.photoURL || null },
+      [other.id]: { displayName: other.displayName, avatarColor: other.avatarColor, photoURL: other.photoURL || null },
+    },
+    createdBy: me.id,
+    createdAt: serverTimestamp(),
+    lastMessage: null,
+    typing: {},
+  });
+  return ref.id;
+}
+
+// Maxfiy suhbat (shifrlangan) — har gal yangi kalit bilan yaratiladi.
+export async function openSecretChat(me, other, secretKey) {
+  const ref = await addDoc(collection(db, 'chats'), {
+    type: 'secret',
+    members: [me.id, other.id],
+    secretKey,
     memberInfo: {
       [me.id]: { displayName: me.displayName, avatarColor: me.avatarColor, photoURL: me.photoURL || null },
       [other.id]: { displayName: other.displayName, avatarColor: other.avatarColor, photoURL: other.photoURL || null },
@@ -385,15 +470,21 @@ async function bumpLastMessage(chatRef, me, members, msg) {
 }
 
 export async function sendMessage(chatId, me, payload) {
-  const { body, attachment, replyTo, forwardFrom, voice, poll, sticker, mentions, ttlSeconds } = payload;
+  const {
+    body, attachment, replyTo, forwardFrom, voice, poll, sticker, mentions, ttlSeconds,
+    videoNote, contact, location, enc,
+  } = payload;
   const chatRef = doc(db, 'chats', chatId);
   const chatSnap = await getDoc(chatRef);
   const members = chatSnap.data()?.members || [];
 
   let type = 'text';
   if (voice) type = 'voice';
+  else if (videoNote) type = 'videoNote';
   else if (poll) type = 'poll';
   else if (sticker) type = 'sticker';
+  else if (contact) type = 'contact';
+  else if (location) type = 'location';
 
   const msg = {
     senderId: me.id,
@@ -401,10 +492,14 @@ export async function sendMessage(chatId, me, payload) {
     senderColor: me.avatarColor,
     type,
     body: body || null,
+    enc: enc || null,            // maxfiy chat uchun shifrlangan matn { iv, data }
     attachment: attachment || null,
     voice: voice || null,
+    videoNote: videoNote || null,
     poll: poll || null,
     sticker: sticker || null,
+    contact: contact || null,
+    location: location || null,
     replyTo: replyTo || null,
     forwardFrom: forwardFrom || null,
     mentions: mentions || [],
@@ -434,6 +529,22 @@ export async function deleteMessage(chatId, messageId) {
 export async function deleteMessageForMe(chatId, messageId, uid) {
   await updateDoc(doc(db, 'chats', chatId, 'messages', messageId), {
     deletedFor: arrayUnion(uid),
+  });
+}
+
+// Xabar ustidan shikoyat (admin moderatsiyasi uchun)
+export async function reportMessage(chatId, msg, me, reason = 'Nomaqbul kontent') {
+  await addDoc(collection(db, 'reports'), {
+    chatId,
+    messageId: msg.id,
+    messageBody: msg.body || previewOf(msg),
+    targetId: msg.senderId,
+    targetName: msg.senderName,
+    reporterId: me.id,
+    reporterName: me.displayName,
+    reason,
+    status: 'open',
+    createdAt: serverTimestamp(),
   });
 }
 
@@ -505,6 +616,22 @@ export async function sendVoice(chatId, me, blob, duration, waveform) {
   await sendMessage(chatId, me, { voice: { url, duration, waveform: waveform || [] } });
 }
 
+// Dumaloq video xabar (video note)
+export async function sendVideoNote(chatId, me, blob, duration) {
+  const url = await uploadBlob(blob, me.id, 'note.webm', 'videonotes');
+  await sendMessage(chatId, me, { videoNote: { url, duration } });
+}
+
+// Kontakt ulashish
+export async function sendContact(chatId, me, contact) {
+  await sendMessage(chatId, me, { contact });
+}
+
+// Lokatsiya yuborish
+export async function sendLocation(chatId, me, location) {
+  await sendMessage(chatId, me, { location });
+}
+
 export async function sendSticker(chatId, me, sticker) {
   await sendMessage(chatId, me, { sticker });
 }
@@ -574,28 +701,4 @@ export async function viewStory(storyId, uid) {
 
 export async function deleteStory(storyId) {
   await deleteDoc(doc(db, 'stories', storyId)).catch(() => {});
-}
-
-// ---------- STORAGE ----------
-export async function uploadFile(file, uid) {
-  const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const path = `uploads/${uid}/${Date.now()}_${safe}`;
-  const storageRef = ref(storage, path);
-  await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
-  const url = await getDownloadURL(storageRef);
-  return {
-    url,
-    name: file.name,
-    mime: file.type || 'application/octet-stream',
-    size: file.size,
-    isImage: (file.type || '').startsWith('image/'),
-  };
-}
-
-// Blob yuklash (ovoz, stories) — name kengaytmasi muhim
-export async function uploadBlob(blob, uid, name, folder = 'uploads') {
-  const path = `${folder}/${uid}/${Date.now()}_${name}`;
-  const storageRef = ref(storage, path);
-  await uploadBytes(storageRef, blob, { contentType: blob.type || 'application/octet-stream' });
-  return getDownloadURL(storageRef);
 }

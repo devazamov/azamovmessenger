@@ -16,6 +16,11 @@ to'g'ridan-to'g'ri Netlify'ga joylashadi.
 
 ### Xabarlar
 - ✅ **Ovozli xabarlar** (yozish + to'lqin shakli bilan ijro)
+- ✅ **Dumaloq video xabarlar** (video note — kamera + mikrofon, 60s gacha)
+- ✅ **Kontakt ulashish** va **lokatsiya yuborish** (geolokatsiya + xarita)
+- ✅ **Video fayl** yuborish va ko'rish
+- ✅ **Maxfiy chat** — AES-GCM shifrlash (🔒)
+- ✅ **Shikoyat (report)** — admin moderatsiyasi uchun
 - ✅ **So'rovnomalar** (bitta/ko'p tanlovli, anonim, natijalar)
 - ✅ **Stikerlar** va katta emoji (emoji-only xabar kattaroq ko'rinadi)
 - ✅ Javob berish (reply), forward, tahrirlash, reaksiyalar
@@ -45,8 +50,16 @@ to'g'ridan-to'g'ri Netlify'ga joylashadi.
 ### Profil va sozlamalar
 - ✅ Profil: ism, bio, rasm, **emoji status** (premium)
 - ✅ **Tungi/yorug' mavzu**, **accent rang**, **chat foni (wallpaper)**
-- ✅ **Premium** (demo)
+- ✅ **Premium (pullik)** — rejalar, demo to'lov, muddat (premiumUntil)
 - ✅ **Bloklash / blokdan chiqarish**
+
+### Admin panel (`/admin`)
+- ✅ Alohida boshqaruv paneli, admin huquqi (`role: 'admin'`) bilan kirish
+- ✅ **Dashboard**: foydalanuvchi/chat/daromad statistikasi, grafiklar
+- ✅ **Foydalanuvchilar**: qidiruv, ban/blok, premium berish/olish, admin tayinlash, o'chirish
+- ✅ **Chatlar**: barcha chat/guruh/kanallarni ko'rish va o'chirish
+- ✅ **Premium**: to'lovlar tarixi, daromad hisoboti
+- ✅ **Moderatsiya**: shikoyatlar, stories nazorati, e'lon yuborish
 - ✅ **Bildirishnomalar** (brauzer) + ovozli signal + sarlavhada o'qilmagan soni
 - ✅ Foydalanuvchi profilini ko'rish
 
@@ -57,7 +70,8 @@ to'g'ridan-to'g'ri Netlify'ga joylashadi.
 | Frontend    | React 18, Vite |
 | Auth        | Firebase Authentication |
 | Ma'lumotlar | Cloud Firestore (realtime) |
-| Fayllar     | Firebase Storage |
+| Media       | Supabase Storage (fallback: Firebase Storage) |
+| Shifrlash   | Web Crypto AES-GCM (maxfiy chat) |
 | Qo'ng'iroq  | WebRTC (STUN) + Firestore signaling |
 | Hosting     | Netlify |
 
@@ -71,6 +85,35 @@ to'g'ridan-to'g'ri Netlify'ga joylashadi.
 6. Xavfsizlik qoidalarini joylang:
    - Firestore → Rules → `firestore.rules` mazmunini qo'ying → Publish
    - Storage → Rules → `storage.rules` mazmunini qo'ying → Publish
+
+## Supabase sozlash (media uchun)
+
+Yangi rasm/video/ovoz/story media'lari **Supabase Storage**'ga yuklanadi.
+Sozlanmasa, avtomatik Firebase Storage'ga tushadi (fallback).
+
+1. [supabase.com](https://supabase.com) da loyiha yarating.
+2. **Storage → New bucket** → nomi `media`, **Public bucket** ni yoqing.
+3. (Yuklash uchun) **Storage → Policies** da `media` bucket'iga `INSERT` (va xohlasangiz `SELECT`) ruxsatini bering:
+   ```sql
+   create policy "Public upload" on storage.objects
+     for insert to anon, authenticated with check (bucket_id = 'media');
+   create policy "Public read" on storage.objects
+     for select to anon, authenticated using (bucket_id = 'media');
+   ```
+4. **Project Settings → API** dan `URL` va `anon public` kalitni `.env` ga yozing:
+   ```
+   VITE_SUPABASE_URL=https://xxxx.supabase.co
+   VITE_SUPABASE_ANON_KEY=eyJ...
+   VITE_SUPABASE_BUCKET=media
+   ```
+
+## Admin panel sozlash
+
+1. Ilovaga oddiy foydalanuvchi sifatida ro'yxatdan o'ting.
+2. **Firebase Console → Firestore → `users` → o'z hujjatingiz** ga
+   `role` (string) = `admin` maydonini qo'shing.
+3. `/admin` manziliga o'ting (mas. `localhost:5173/admin`) va admin hisob bilan kiring.
+4. Boshqa adminlarni endi panel ichidan ("Admin qilish") tayinlashingiz mumkin.
 
 ## Lokal ishga tushirish
 
@@ -147,7 +190,14 @@ chats/{chatId}/messages/{id} # type(text|voice|poll|sticker), senderId, body, at
 stories/{storyId}            # authorId, url, caption, viewers[], createdAt (24s TTL)
 calls/{callId}               # callerId, calleeId, type, offer, answer, status
   /callerCandidates, /calleeCandidates   # ICE nomzodlari
+payments/{id}                # uid, planId, amount, months, status, cardLast4, createdAt
+reports/{id}                 # chatId, messageId, targetId, reporterId, reason, status
+announcements/{id}           # text, authorId, authorName, createdAt
 ```
+
+Yangi xabar maydonlari: `videoNote{url,duration}`, `contact{uid,name,username}`,
+`location{lat,lng}`, `enc{iv,data}` (maxfiy chat). Foydalanuvchida: `role`,
+`banned`, `premiumUntil`, `premiumPlan`. Maxfiy chatda: `type:'secret'`, `secretKey`.
 
 ## Cheklovlar (production uchun e'tibor)
 

@@ -4,7 +4,7 @@ import { Avatar, lastSeen } from './components.jsx';
 // Boshqa foydalanuvchi profilini ko'rish (shaxsiy chat sarlavhasidan)
 export default function UserProfile({
   user, online, lastActive, isBlocked,
-  onAudioCall, onVideoCall, onToggleBlock, onClose,
+  onAudioCall, onVideoCall, onSecretChat, onToggleBlock, onClose,
 }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -30,6 +30,7 @@ export default function UserProfile({
         <div className="profile-actions">
           <button className="pa-btn" onClick={onAudioCall}><span>📞</span>Qo'ng'iroq</button>
           <button className="pa-btn" onClick={onVideoCall}><span>📹</span>Video</button>
+          {onSecretChat && <button className="pa-btn" onClick={onSecretChat}><span>🔒</span>Maxfiy</button>}
         </div>
 
         {user.bio && (

@@ -4,15 +4,19 @@ import {
   subscribeChats, subscribeMessages, subscribeTyping,
   sendMessage as sendMsg, setTyping, uploadFile,
   openPrivateChat, createGroup as createGroupFb, createChannel as createChannelFb, openSavedChat,
+  openSecretChat,
   searchUsers, isUserOnline, subscribeUser, fetchUsers,
-  editMessage, deleteMessage, deleteMessageForMe, toggleReaction, forwardMessages,
-  markChatRead, updateProfile, setPremium, setEmojiStatus,
+  editMessage, deleteMessage, deleteMessageForMe, toggleReaction, forwardMessages, reportMessage,
+  markChatRead, updateProfile, setEmojiStatus, purchasePremium,
   muteChat, archiveChat, pinChatMessage, unpinChatMessage, updateChatMeta,
   addMembers, removeMember, leaveChat, setAdmin,
   sendVoice, sendSticker, sendPoll, votePoll,
+  sendVideoNote, sendContact, sendLocation,
   addStory, subscribeStories, viewStory, deleteStory,
   blockUser, unblockUser,
 } from './chatStore.js';
+import { encryptText, decryptMessages, generateSecretKey } from './crypto.js';
+import { PremiumModal } from './Premium.jsx';
 import { Call, subscribeIncomingCalls, declineCall } from './calls.js';
 import { loadSettings, saveSettings, applySettings } from './theme.js';
 import {
@@ -66,6 +70,7 @@ function Messenger({ user: initialUser, onLogout }) {
   const [confirm, setConfirm] = useState(null);
   const [storyAuthor, setStoryAuthor] = useState(null);
   const [blockedUsers, setBlockedUsers] = useState([]);
+  const [showPremium, setShowPremium] = useState(false);
 
   // Stories, mavzu, bildirishnoma
   const [storiesByAuthor, setStoriesByAuthor] = useState({});
@@ -78,6 +83,10 @@ function Messenger({ user: initialUser, onLogout }) {
 
   const active = chats.find((c) => c.id === activeId) || null;
 
+  // Maxfiy chat kaliti (effekt ichida foydalanish uchun ref)
+  const secretKeyRef = useRef(null);
+  useEffect(() => { secretKeyRef.current = active?.secret ? active.secretKey : null; }, [active]);
+
   useEffect(() => startPresence(user.id), [user.id]);
   useEffect(() => subscribeChats(user.id, setChats), [user.id]);
   useEffect(() => subscribeUser(user.id, (d) => setUser((u) => ({ ...u, ...d, id: u.id }))), [user.id]);
@@ -89,8 +98,9 @@ function Messenger({ user: initialUser, onLogout }) {
     if (!activeId) { setMessages([]); return; }
     setMessages([]);
     markChatRead(activeId, user.id);
-    const unsub = subscribeMessages(activeId, user.id, (msgs) => {
-      setMessages(msgs);
+    const unsub = subscribeMessages(activeId, user.id, async (msgs) => {
+      const key = secretKeyRef.current;
+      setMessages(key ? await decryptMessages(msgs, key) : msgs);
       markChatRead(activeId, user.id);
     });
     return unsub;
@@ -163,7 +173,29 @@ function Messenger({ user: initialUser, onLogout }) {
   }, [chats, activeId, user.id]);
 
   // ---- Xabar yuborish ----
-  const handleSend = (payload) => activeId && sendMsg(activeId, user, payload);
+  async function handleSend(payload) {
+    if (!activeId) return;
+    // Maxfiy chatda matnni shifrlaymiz
+    if (active?.secret && payload.body) {
+      const enc = await encryptText(payload.body, active.secretKey);
+      payload = { ...payload, body: null, enc };
+    }
+    sendMsg(activeId, user, payload);
+  }
+
+  async function handleVideoNote({ blob, duration }) {
+    if (!activeId) return;
+    setUploading(true);
+    try { await sendVideoNote(activeId, user, blob, duration); }
+    catch (err) { alert('Video xabar yuborilmadi.\n' + (err.message || err)); }
+    finally { setUploading(false); }
+  }
+  const handleSendContact = (contact) => activeId && sendContact(activeId, user, contact);
+  const handleSendLocation = (location) => activeId && sendLocation(activeId, user, location);
+  async function handleOpenContact(contact) {
+    const u = { id: contact.uid, displayName: contact.name, avatarColor: contact.avatarColor, photoURL: contact.photoURL };
+    setActiveId(await openPrivateChat(user, u));
+  }
 
   async function handleFile(file) {
     if (!activeId || !file) return;
@@ -209,6 +241,16 @@ function Messenger({ user: initialUser, onLogout }) {
 
   // ---- Suhbat ochish/yaratish ----
   async function openPrivate(u) { setActiveId(await openPrivateChat(user, u)); setShowNew(false); }
+  async function openSecret(u) {
+    const key = await generateSecretKey();
+    setActiveId(await openSecretChat(user, u, key));
+    setShowNew(false);
+    setShowUserProfile(false);
+  }
+  async function buyPremium(planId, card) {
+    await purchasePremium(user, planId, card);
+    setShowPremium(false);
+  }
   async function createGroup(title, members) { setActiveId(await createGroupFb(user, title, members)); setShowNew(false); }
   async function createChannel(title, desc, members) { setActiveId(await createChannelFb(user, title, desc, members)); setShowNew(false); }
   async function openSaved() { setActiveId(await openSavedChat(user)); }
@@ -286,7 +328,7 @@ function Messenger({ user: initialUser, onLogout }) {
 
   function onHeaderClick() {
     if (!active) return;
-    if (active.type === 'private') setShowUserProfile(true);
+    if (active.type === 'private' || active.type === 'secret') setShowUserProfile(true);
     else if (active.type === 'group' || active.type === 'channel') setShowGroupInfo(true);
   }
 
@@ -320,6 +362,9 @@ function Messenger({ user: initialUser, onLogout }) {
             canPost={canPost}
             onSend={handleSend} onFile={handleFile} onVoice={handleVoice}
             onSticker={handleSticker} onPoll={handlePoll} onVote={handleVote}
+            onVideoNote={handleVideoNote} onSendContact={handleSendContact}
+            onSendLocation={handleSendLocation} onOpenContact={handleOpenContact}
+            searchUsers={(q) => searchUsers(q, user.id)}
             onTyping={notifyTyping}
             onEdit={(id, body) => editMessage(active.id, id, body)}
             onDeleteEveryone={(id) => deleteMessage(active.id, id)}
@@ -328,6 +373,7 @@ function Messenger({ user: initialUser, onLogout }) {
             onForward={(msgs) => setForwarding(msgs)}
             onPin={(msg) => pinChatMessage(active.id, msg)}
             onUnpin={() => unpinChatMessage(active.id)}
+            onReport={(msg) => { reportMessage(active.id, msg, user); alert('Shikoyat yuborildi. Rahmat!'); }}
             onHeaderClick={onHeaderClick}
             onAudioCall={() => startCall(false)} onVideoCall={() => startCall(true)}
             onBack={() => setActiveId(null)}
@@ -359,7 +405,7 @@ function Messenger({ user: initialUser, onLogout }) {
           user={user} settings={settings} onClose={() => setShowSettings(false)}
           onSaveProfile={(f) => updateProfile(user.id, f)}
           onUploadPhoto={handleProfilePhoto} onTheme={changeTheme}
-          onTogglePremium={(v) => setPremium(user.id, v)}
+          onBuyPremium={() => { setShowSettings(false); setShowPremium(true); }}
           onSetEmojiStatus={(e) => setEmojiStatus(user.id, e)}
           onLogout={onLogout}
           notifyOn={notifyOn} onToggleNotify={toggleNotify}
@@ -373,6 +419,7 @@ function Messenger({ user: initialUser, onLogout }) {
           isBlocked={isBlocked}
           onAudioCall={() => { setShowUserProfile(false); startCall(false); }}
           onVideoCall={() => { setShowUserProfile(false); startCall(true); }}
+          onSecretChat={active?.type !== 'secret' ? () => openSecret({ id: peerProfile.id, displayName: peerProfile.displayName, avatarColor: peerProfile.avatarColor, photoURL: peerProfile.photoURL }) : null}
           onToggleBlock={() => { toggleBlock(); setShowUserProfile(false); }}
           onClose={() => setShowUserProfile(false)}
         />
@@ -400,6 +447,10 @@ function Messenger({ user: initialUser, onLogout }) {
 
       {confirm && (
         <ConfirmModal {...confirm} onClose={() => setConfirm(null)} />
+      )}
+
+      {showPremium && (
+        <PremiumModal user={user} onClose={() => setShowPremium(false)} onBuy={buyPremium} />
       )}
 
       {incoming && !activeCall && (

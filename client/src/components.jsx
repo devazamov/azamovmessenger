@@ -219,6 +219,43 @@ export function ForwardModal({ chats, onClose, onPick, count }) {
   );
 }
 
+// Kontakt ulashish uchun foydalanuvchi tanlash
+export function ContactPickerModal({ searchUsers, onPick, onClose }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      if (query.trim().length < 1) { setResults([]); return; }
+      try { setResults(await searchUsers(query)); } catch {}
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query]);
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Kontakt ulashish</h3>
+          <button className="icon-btn" onClick={onClose}>✕</button>
+        </div>
+        <input className="modal-input" placeholder="Foydalanuvchi qidirish..." value={query}
+          onChange={(e) => setQuery(e.target.value)} autoFocus />
+        <div className="search-results">
+          {results.map((u) => (
+            <div key={u.id} className="search-row" onClick={() => onPick(u)}>
+              <Avatar name={u.displayName} color={u.avatarColor} photoURL={u.photoURL} size={40} />
+              <div className="search-info">
+                <div className="search-name">{u.displayName}{u.premium && ' ⭐'}</div>
+                <div className="search-username">@{u.username}</div>
+              </div>
+            </div>
+          ))}
+          {query && results.length === 0 && <div className="empty-hint">Hech kim topilmadi</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Tasdiqlash oynasi (o'chirish, chiqish va h.k.)
 export function ConfirmModal({ title, text, confirmLabel = 'Tasdiqlash', danger, onConfirm, onClose }) {
   return (

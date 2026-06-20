@@ -6,7 +6,7 @@ const STATUS_EMOJI = ['⭐', '🔥', '😎', '🚀', '💎', '👑', '🎯', '�
 
 export default function Settings({
   user, settings, onClose, onSaveProfile, onUploadPhoto, onTheme,
-  onTogglePremium, onSetEmojiStatus, onLogout,
+  onBuyPremium, onSetEmojiStatus, onLogout,
   notifyOn, onToggleNotify, blockedUsers, onUnblock,
 }) {
   const [tab, setTab] = useState('profile');
@@ -81,8 +81,8 @@ export default function Settings({
                 <div className="premium-desc">
                   {user.premium ? 'Premium faol! Emoji status, belgi va ko\'proq imkoniyat.' : 'Eksklyuziv belgi, emoji status va ranglar.'}
                 </div>
-                <button className="premium-btn" onClick={() => onTogglePremium(!user.premium)}>
-                  {user.premium ? 'Premiumni o\'chirish' : 'Premium olish'}
+                <button className="premium-btn" onClick={onBuyPremium}>
+                  {user.premium ? 'Premiumni uzaytirish' : 'Premium olish'}
                 </button>
               </div>
 

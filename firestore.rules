@@ -17,22 +17,27 @@ service cloud.firestore {
     function isAdmin(chat) {
       return signedIn() && (uid() in chat.get('admins', []) || uid() == chat.get('createdBy', ''));
     }
-
-    // Foydalanuvchi profillari: hamma o'qiy oladi (qidiruv uchun),
-    // faqat egasi o'zinikini yozadi.
-    match /users/{userId} {
-      allow read: if signedIn();
-      allow create, update: if signedIn() && uid() == userId;
-      allow delete: if false;
+    // Platforma administratori — users/{uid}.role == 'admin'.
+    function isPlatformAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(uid())).data.get('role', '') == 'admin';
     }
 
-    // Stories (24 soatlik) — hamma a'zo ko'radi, faqat egasi yaratadi/o'chiradi,
-    // boshqalar faqat ko'rganlar ro'yxatiga qo'shilishi mumkin.
+    // Foydalanuvchi profillari: hamma o'qiy oladi (qidiruv uchun).
+    // O'zini yangilaydi; admin esa boshqalarni (ban, role, premium) boshqaradi.
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && uid() == userId;
+      allow update: if signedIn() && (uid() == userId || isPlatformAdmin());
+      allow delete: if isPlatformAdmin();
+    }
+
+    // Stories (24 soatlik) — a'zolar ko'radi, egasi yaratadi/o'chiradi, admin o'chiradi.
     match /stories/{storyId} {
       allow read: if signedIn();
       allow create: if signedIn() && request.resource.data.authorId == uid();
       allow update: if signedIn();   // viewers ro'yxatiga qo'shilish
-      allow delete: if signedIn() && resource.data.authorId == uid();
+      allow delete: if signedIn() && (resource.data.authorId == uid() || isPlatformAdmin());
     }
 
     // Qo'ng'iroqlar — signaling (offer/answer/ICE).
@@ -45,25 +50,42 @@ service cloud.firestore {
       }
     }
 
-    // Chatlar: faqat a'zolar o'qiydi/yangilaydi.
-    match /chats/{chatId} {
-      allow read: if isMember(resource.data);
-      allow create: if signedIn() && uid() in request.resource.data.members;
-      // A'zolar chatni yangilay oladi (lastMessage, typing, unread, mute, pin,
-      // a'zo qo'shish va h.k.). O'chirish taqiqlangan.
-      allow update: if isMember(resource.data) || isMember(request.resource.data);
-      allow delete: if false;
+    // To'lovlar (premium). Foydalanuvchi o'zinikini yaratadi/o'qiydi, admin hammasini.
+    match /payments/{paymentId} {
+      allow create: if signedIn() && request.resource.data.uid == uid();
+      allow read: if signedIn() && (resource.data.uid == uid() || isPlatformAdmin());
+      allow update, delete: if isPlatformAdmin();
+    }
 
-      // Xabarlar: faqat chat a'zolari.
+    // Shikoyatlar — har kim yaratadi, faqat admin ko'radi va boshqaradi.
+    match /reports/{reportId} {
+      allow create: if signedIn() && request.resource.data.reporterId == uid();
+      allow read, update, delete: if isPlatformAdmin();
+    }
+
+    // E'lonlar — hamma o'qiydi, faqat admin yozadi.
+    match /announcements/{annId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isPlatformAdmin();
+    }
+
+    // Chatlar: a'zolar yoki admin o'qiydi; o'chirishni faqat admin qiladi.
+    match /chats/{chatId} {
+      allow read: if isMember(resource.data) || isPlatformAdmin();
+      allow create: if signedIn() && uid() in request.resource.data.members;
+      allow update: if isMember(resource.data) || isMember(request.resource.data) || isPlatformAdmin();
+      allow delete: if isPlatformAdmin();
+
+      // Xabarlar: chat a'zolari yoki admin.
       match /messages/{messageId} {
-        allow read: if isMember(chatOf(chatId));
+        allow read: if isMember(chatOf(chatId)) || isPlatformAdmin();
         allow create: if isMember(chatOf(chatId))
           && request.resource.data.senderId == uid();
-        // Tahrirlash / reaksiya / ovoz berish / "men uchun o'chirish" — a'zolar.
         allow update: if isMember(chatOf(chatId));
-        // Hammaga o'chirish: faqat muallif yoki admin.
-        allow delete: if isMember(chatOf(chatId))
-          && (resource.data.senderId == uid() || isAdmin(chatOf(chatId)));
+        // Hammaga o'chirish: muallif, chat admini yoki platforma admini.
+        allow delete: if (isMember(chatOf(chatId))
+          && (resource.data.senderId == uid() || isAdmin(chatOf(chatId))))
+          || isPlatformAdmin();
       }
     }
   }

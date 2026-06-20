@@ -14,6 +14,7 @@ const FOLDERS = [
 function chatIcon(c) {
   if (c.type === 'channel') return '📢 ';
   if (c.type === 'group') return '👥 ';
+  if (c.type === 'secret') return '🔒 ';
   return '';
 }
 
@@ -41,7 +42,7 @@ export default function Sidebar({
     if (search && !c.title.toLowerCase().includes(search.toLowerCase())) return false;
     if (showArchived) return true;
     if (folder === 'unread') return c.unread > 0;
-    if (folder === 'private') return c.type === 'private';
+    if (folder === 'private') return c.type === 'private' || c.type === 'secret';
     if (folder === 'group') return c.type === 'group';
     if (folder === 'channel') return c.type === 'channel';
     return true;
